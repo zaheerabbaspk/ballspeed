@@ -101,7 +101,7 @@ export class ControllerPage implements OnInit, AfterViewInit {
     if (!roomId) return;
 
     this.currentRoomId.set(roomId);
-    this.shareUrl.set(`${window.location.origin}/room/${roomId}/camera`);
+    this.shareUrl.set(`${window.location.origin}/#/room/${roomId}/camera`);
     await this.streamingService.init(roomId, 'CONTROLLER');
 
     this.streamingService.remoteStream$.subscribe(({ peerId, stream }: { peerId: string, stream: MediaStream }) => {
