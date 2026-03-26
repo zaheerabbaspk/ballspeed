@@ -39,6 +39,10 @@ export class CameraPage implements OnInit {
 
   async startStreaming() {
     try {
+      if (!window.isSecureContext) {
+        this.status = 'Error: Camera access REQUIRES a secure connection (HTTPS). Please open the https:// link.';
+        return;
+      }
       this.status = 'Connecting...';
       if (!this.roomId) throw new Error('No Room ID found');
 
@@ -55,7 +59,9 @@ export class CameraPage implements OnInit {
     } catch (error: any) {
       console.error('Streaming error:', error);
       if (error.name === 'NotAllowedError') {
-        this.status = 'Permission Denied! Please ALLOW camera/mic access in your browser settings and refresh.';
+        this.status = 'Permission Denied! Tap the [LOCK] icon next to the URL, select "Site Settings", and then click "Allow" for Camera/Mic.';
+      } else if (error.name === 'NotFoundError') {
+        this.status = 'Error: No camera/microphone found on this device.';
       } else {
         this.status = 'Error: ' + (error.message || error);
       }
