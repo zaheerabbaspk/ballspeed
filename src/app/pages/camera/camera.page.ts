@@ -46,11 +46,28 @@ export class CameraPage implements OnInit {
       this.status = 'Connecting...';
       if (!this.roomId) throw new Error('No Room ID found');
 
-      await this.streamingService.init(this.roomId);
-      const stream = await this.streamingService.startProducing('CONTROLLER');
-      
-      if (this.localVideo) {
-        this.localVideo.nativeElement.srcObject = stream;
+      await this.logDevices();
+
+      console.log('[CameraPage] Starting stream...');
+      this.status = 'Requesting Camera...';
+      try {
+        await this.streamingService.init(this.roomId);
+        const stream = await this.streamingService.startProducing('CONTROLLER');
+        if (this.localVideo) {
+          this.localVideo.nativeElement.srcObject = stream;
+        }
+      } catch (err: any) {
+        if (err.name === 'NotAllowedError') {
+          console.log('[CameraPage] Video+Audio failed, trying Video-only fallback...');
+          this.status = 'Retrying Video only...';
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: { ideal: 'environment' } } 
+          });
+          if (this.localVideo) {
+            this.localVideo.nativeElement.srcObject = stream;
+          }
+        }
+        throw err;
       }
       
       this.isStreaming = true;
@@ -65,6 +82,15 @@ export class CameraPage implements OnInit {
       } else {
         this.status = 'Error: ' + (error.message || error);
       }
+    }
+  }
+
+  private async logDevices() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      console.log('[CameraPage] Available devices:', devices.map(d => `${d.kind}: ${d.label} (${d.deviceId})`));
+    } catch (e) {
+      console.error('[CameraPage] Enumerate devices failed:', e);
     }
   }
 
