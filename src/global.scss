@@ -12,8 +12,29 @@
   }
 }
 
-body {
-  background: #020617; /* slate-950 */
+html, body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #020617; /* slate-950 */
+}
+
+app-root {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+ion-app {
+  height: 100%;
+  width: 100%;
+}
+
+/* Ensure Ionic content is visible and handles background properly */
+ion-content {
+  --background: transparent;
+  height: 100%;
 }
 
 /*

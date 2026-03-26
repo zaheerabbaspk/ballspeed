@@ -16,11 +16,13 @@ export class SignalingService {
   constructor() {
     try {
       const { supabaseUrl, supabaseKey } = environment;
+      console.log('[Signaling] Initializing with URL:', supabaseUrl);
       if (supabaseUrl.includes('your-project-url')) {
         console.warn('Supabase URL not configured correctly.');
         return;
       }
       this.supabase = createClient(supabaseUrl, supabaseKey);
+      console.log('[Signaling] Supabase client created');
     } catch (e) {
       console.error('Supabase init error:', e);
     }
