@@ -20,6 +20,7 @@ export class CameraPage implements OnInit {
   signalingStatus = signal<string>('initializing');
   rtcStatus = signal<string>('new');
   isFullscreen = signal<boolean>(false);
+  errorName = signal<string | null>(null);
   private roomId: string | null = null;
 
   constructor(
@@ -75,6 +76,7 @@ export class CameraPage implements OnInit {
       this.isFullscreen.set(true);
     } catch (error: any) {
       console.error('Streaming error:', error);
+      this.errorName.set(error.name);
       if (error.name === 'NotAllowedError') {
         this.status = 'Permission Denied! Tap the [LOCK] icon next to the URL, select "Site Settings", and then click "Allow" for Camera/Mic.';
       } else if (error.name === 'NotFoundError') {
@@ -82,6 +84,22 @@ export class CameraPage implements OnInit {
       } else {
         this.status = 'Error: ' + (error.message || error);
       }
+    }
+  }
+
+  async tryBasicCamera() {
+    try {
+      this.status = 'Trying Basic Mode...';
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (this.localVideo) {
+        this.localVideo.nativeElement.srcObject = stream;
+      }
+      this.isStreaming = true;
+      this.status = 'Basic Stream (No HD)';
+      this.errorName.set(null);
+    } catch (err: any) {
+      console.error('Basic mode failed:', err);
+      this.status = 'Even Basic Mode failed: ' + err.name;
     }
   }
 
