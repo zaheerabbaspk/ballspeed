@@ -1,0 +1,74 @@
+<ion-content [fullscreen]="true" class="bg-slate-950 text-white">
+  <!-- Dynamic Background Element -->
+  <div class="fixed inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full"></div>
+    <div class="absolute -bottom-[10%] -right-[10%] w-[40%] h-[40%] bg-rose-600/10 blur-[120px] rounded-full"></div>
+  </div>
+
+  <div class="relative min-h-screen flex flex-col items-center justify-center p-4 md:p-8">
+    
+    <!-- Hero Section -->
+    <div class="text-center mb-12">
+      <div class="w-24 h-24 bg-gradient-to-tr from-rose-600 to-rose-400 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-2xl shadow-rose-600/40 rotate-3 hover:rotate-0 transition-transform duration-500">
+        <ion-icon name="videocam" class="text-5xl text-white"></ion-icon>
+      </div>
+      <h1 class="text-3xl md:text-5xl font-black tracking-tight mb-2 bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60">
+        BALLSPEED
+      </h1>
+      <div class="flex items-center justify-center gap-2">
+        <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+        <p class="text-slate-400 text-sm font-bold uppercase tracking-[0.2em]">P2P Studio Pro</p>
+      </div>
+    </div>
+
+    <!-- Main Card -->
+    <div class="w-full max-w-sm bg-slate-900/40 backdrop-blur-2xl border border-white/5 rounded-3xl md:rounded-[2.5rem] p-6 md:p-8 shadow-2xl">
+      
+      <div class="space-y-8">
+        <!-- Create Room Section -->
+        <div>
+          <button 
+            (click)="createRoom()"
+            class="group w-full relative overflow-hidden bg-white text-slate-950 font-black py-5 rounded-2xl transition-all active:scale-95 shadow-xl"
+          >
+            <div class="absolute inset-0 bg-gradient-to-r from-blue-100 to-white opacity-0 group-hover:opacity-100 transition-opacity"></div>
+            <span class="relative">CREATE STUDIO</span>
+          </button>
+          <p class="text-center text-slate-500 text-[10px] mt-3 font-bold uppercase tracking-widest">Start as Controller</p>
+        </div>
+
+        <!-- OR Divider -->
+        <div class="flex items-center gap-4 px-4 text-slate-700">
+          <div class="flex-1 h-px bg-current opacity-20"></div>
+          <span class="text-[10px] font-black uppercase tracking-[0.2em]">OR</span>
+          <div class="flex-1 h-px bg-current opacity-20"></div>
+        </div>
+
+        <!-- Join Room Section -->
+        <div class="space-y-4">
+          <div class="relative group">
+            <input 
+              [(ngModel)]="roomId"
+              placeholder="ENTER ROOM ID"
+              class="w-full bg-slate-800/50 border border-white/5 rounded-2xl py-5 px-6 text-center text-xl font-mono text-cyan-400 focus:border-cyan-500/50 focus:ring-4 focus:ring-cyan-500/10 outline-none transition-all uppercase placeholder:text-slate-600"
+            />
+          </div>
+          <button 
+            (click)="joinRoom()"
+            [disabled]="!roomId"
+            class="w-full bg-slate-800 disabled:opacity-30 text-white font-black py-5 rounded-2xl transition-all active:scale-95 border border-white/5 hover:bg-slate-700"
+          >
+            JOIN AS CAMERA
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="mt-16 text-center opacity-40">
+      <p class="text-[9px] font-black uppercase tracking-[0.4em] text-white">Ultra-Low Latency • Encrypted • P2P</p>
+    </div>
+
+  </div>
+</ion-content>
