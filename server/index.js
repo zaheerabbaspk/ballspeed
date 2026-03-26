@@ -114,60 +114,49 @@ io.on('connection', (socket) => {
     callback(producers.map(p => p.id));
   });
 
-  socket.on('startRtmp', async ({ producerId, rtmpUrl }, callback) => {
+  socket.on('startRtmp', async ({ videoProducerId, audioProducerId, rtmpUrl }, callback) => {
     try {
-      console.log(`Starting RTMP for producer ${producerId} to ${rtmpUrl}`);
+      console.log(`Starting RTMP: video=${videoProducerId}, audio=${audioProducerId} -> ${rtmpUrl}`);
       
-      // 1. Create PlainTransport
-      const transport = await router.createPlainTransport({
-        listenIp: '127.0.0.1',
-        rtcpMux: false,
-        comedia: true
-      });
+      const vTrans = await router.createPlainTransport({ listenIp: '127.0.0.1', rtcpMux: false, comedia: true });
+      const aTrans = await router.createPlainTransport({ listenIp: '127.0.0.1', rtcpMux: false, comedia: true });
 
-      // 2. Consume the producer
-      const producer = producers.find(p => p.id === producerId).producer;
-      const consumer = await transport.consume({
-        producerId: producer.id,
-        rtpCapabilities: router.rtpCapabilities, // Use router capabilities for server-side consume
-      });
+      const vCons = await vTrans.consume({ producerId: videoProducerId, rtpCapabilities: router.rtpCapabilities });
+      let aCons = null;
+      if (audioProducerId) {
+        aCons = await aTrans.consume({ producerId: audioProducerId, rtpCapabilities: router.rtpCapabilities });
+      }
 
-      // 3. Spawn FFmpeg
       const ffmpegArgs = [
-        '-loglevel', 'debug',
-        '-protocol_whitelist', 'pipe,udp,rtp',
-        '-fflags', '+genpts',
-        '-f', 'sdp',
-        '-i', 'pipe:0',
-        '-c:v', 'copy',
-        '-f', 'flv',
-        rtmpUrl
+        '-loglevel', 'info', '-protocol_whitelist', 'pipe,udp,rtp', '-fflags', '+genpts',
+        '-f', 'sdp', '-i', 'pipe:0',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p', '-g', '60',
+        '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
+        '-f', 'flv', rtmpUrl
       ];
 
       const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-      
       ffmpeg.on('error', (err) => console.error('FFmpeg error:', err));
-      ffmpeg.on('exit', (code, signal) => console.log(`FFmpeg exited with code ${code} and signal ${signal}`));
+      ffmpeg.on('exit', (code) => console.log(`FFmpeg exited: ${code}`));
 
-      // 4. Generate SDP for FFmpeg and write to stdin
-      const sdp = `v=0
-o=- 0 0 IN IP4 127.0.0.1
-s=Mediasoup
-c=IN IP4 127.0.0.1
-t=0 0
-m=video ${transport.tuple.localPort} RTP/AVP ${consumer.rtpParameters.codecs[0].payloadType}
-a=rtpmap:${consumer.rtpParameters.codecs[0].payloadType} VP8/90000
-`;
+      let sdp = `v=0\no=- 0 0 IN IP4 127.0.0.1\ns=Mediasoup\nc=IN IP4 127.0.0.1\nt=0 0\n`;
+      sdp += `m=video ${vTrans.tuple.localPort} RTP/AVP ${vCons.rtpParameters.codecs[0].payloadType}\n`;
+      sdp += `a=rtpmap:${vCons.rtpParameters.codecs[0].payloadType} VP8/90000\n`;
+      
+      if (aCons) {
+        sdp += `m=audio ${aTrans.tuple.localPort} RTP/AVP ${aCons.rtpParameters.codecs[0].payloadType}\n`;
+        sdp += `a=rtpmap:${aCons.rtpParameters.codecs[0].payloadType} opus/48000/2\n`;
+      }
+
       ffmpeg.stdin.write(sdp);
       ffmpeg.stdin.end();
 
-      socket.rtpTransport = transport;
+      socket.rtmpTransports = [vTrans, aTrans];
       socket.ffmpeg = ffmpeg;
-
       callback({ success: true });
-    } catch (error) {
-      console.error('RTMP Error:', error);
-      callback({ error: error.message });
+    } catch (err) {
+      console.error('RTMP Error:', err);
+      callback({ error: err.message });
     }
   });
 

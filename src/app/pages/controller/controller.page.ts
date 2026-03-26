@@ -3,6 +3,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { CommonModule } from '@angular/common';
 import { IonContent, IonHeader, IonToolbar, IonTitle, IonButton, IonIcon, IonBadge, IonGrid, IonRow, IonCol, ModalController } from '@ionic/angular/standalone';
 import { StreamingService } from '../../services/streaming.service';
+import { MediasoupService } from '../../services/mediasoup.service';
 import { SettingsService } from '../../services/settings.service';
 import { SettingsPage } from '../settings/settings.page';
 import { ActivatedRoute } from '@angular/router';
@@ -24,6 +25,7 @@ import {
 export class ControllerPage implements OnInit, AfterViewInit {
   @ViewChild('mainVideo') mainVideo!: ElementRef<HTMLVideoElement>;
   @ViewChild('overlayContainer') overlayContainer!: ElementRef<HTMLDivElement>;
+  @ViewChild('composingCanvas') composingCanvas!: ElementRef<HTMLCanvasElement>;
   cameras = signal<any[]>([]); // { id, stream }
   activeCameraId = signal<string | null>(null);
   activeStream = signal<MediaStream | null>(null);
@@ -41,6 +43,9 @@ export class ControllerPage implements OnInit, AfterViewInit {
   private audioCtx: AudioContext | null = null;
   private analyzer: AnalyserNode | null = null;
   private animationFrameId: number | null = null;
+  private compFrameId: number | null = null;
+
+  isRtmpStreaming = signal<boolean>(false);
 
   currentRoomId = signal<string>('');
   shareUrl = signal<string>('');
@@ -80,6 +85,7 @@ export class ControllerPage implements OnInit, AfterViewInit {
 
   constructor(
     private streamingService: StreamingService,
+    private mediasoup: MediasoupService,
     private route: ActivatedRoute,
     public studioSettings: SettingsService,
     private modalCtrl: ModalController,
@@ -103,6 +109,14 @@ export class ControllerPage implements OnInit, AfterViewInit {
     this.currentRoomId.set(roomId);
     this.shareUrl.set(`${window.location.origin}/#/room/${roomId}/camera`);
     await this.streamingService.init(roomId, 'CONTROLLER');
+    
+    // Initialize Mediasoup for RTMP gateway
+    try {
+      await this.mediasoup.init();
+      console.log('Mediasoup gateway ready');
+    } catch (err) {
+      console.warn('Mediasoup gateway not available:', err);
+    }
 
     this.streamingService.remoteStream$.subscribe(({ peerId, stream }: { peerId: string, stream: MediaStream }) => {
       console.log('Received remote stream from camera:', peerId);
@@ -424,5 +438,80 @@ export class ControllerPage implements OnInit, AfterViewInit {
     if (roomId) {
       await this.streamingService.init(roomId, 'CONTROLLER');
     }
+  }
+
+  // --- RTMP & Compositing ---
+
+  async toggleRtmp() {
+    if (this.isRtmpStreaming()) {
+      this.stopRtmp();
+    } else {
+      await this.startRtmpPush();
+    }
+  }
+
+  private async startRtmpPush() {
+    const url = this.studioSettings.rtmpUrl();
+    const key = this.studioSettings.rtmpKey();
+    if (!url || !key) {
+      alert('Please set RTMP URL and Stream Key in Settings.');
+      return;
+    }
+
+    try {
+      this.isRtmpStreaming.set(true);
+      this.startCompositing();
+      
+      const stream = this.composingCanvas.nativeElement.captureStream(30);
+      // We need to add the audio track from the active camera if available
+      if (this.activeStream()) {
+        this.activeStream()!.getAudioTracks().forEach(track => stream.addTrack(track));
+      }
+
+      await this.mediasoup.produce(stream);
+      const res = await this.mediasoup.startRtmp(`${url}${key}`);
+      
+      if (res.error) {
+        throw new Error(res.error);
+      }
+
+      console.log('RTMP Push started');
+    } catch (err) {
+      console.error('Failed to start RTMP:', err);
+      alert('RTMP Error: ' + (err as any).message);
+      this.stopRtmp();
+    }
+  }
+
+  private stopRtmp() {
+    this.isRtmpStreaming.set(false);
+    if (this.compFrameId) cancelAnimationFrame(this.compFrameId);
+    this.mediasoup.stop();
+    console.log('RTMP Push stopped');
+  }
+
+  private startCompositing() {
+    const canvas = this.composingCanvas.nativeElement;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const render = () => {
+      // 1. Draw Active Camera
+      if (this.activeStream() && this.mainVideo) {
+        ctx.drawImage(this.mainVideo.nativeElement, 0, 0, 1920, 1080);
+      } else {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, 1920, 1080);
+      }
+
+      // 2. Draw Overlays (Note: Iframes cannot be drawn to canvas directly due to security)
+      // For now, we draw a placeholder if we can't capture the iframe.
+      // In a real scenario, we might use a library that renders HTML to canvas or a server-side compositor.
+      // However, we can try to draw the elements if they were simple HTML.
+      
+      this.compFrameId = requestAnimationFrame(render);
+    };
+
+    render();
   }
 }
