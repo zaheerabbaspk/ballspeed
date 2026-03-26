@@ -31,6 +31,7 @@ export class SettingsPage implements OnInit {
   
   rtmpUrl = '';
   rtmpKey = '';
+  gatewayUrl = '';
   showOverlay = false;
   overlayWidth = 1920;
   overlayHeight = 1080;
@@ -59,6 +60,7 @@ export class SettingsPage implements OnInit {
   ngOnInit() {
     this.rtmpUrl = this.settingsService.rtmpUrl();
     this.rtmpKey = this.settingsService.rtmpKey();
+    this.gatewayUrl = this.settingsService.gatewayUrl();
     this.showOverlay = this.settingsService.showOverlay();
     this.overlayWidth = this.settingsService.overlayWidth();
     this.overlayHeight = this.settingsService.overlayHeight();
@@ -77,6 +79,7 @@ export class SettingsPage implements OnInit {
   save() {
     this.settingsService.rtmpUrl.set(this.rtmpUrl);
     this.settingsService.rtmpKey.set(this.rtmpKey);
+    this.settingsService.gatewayUrl.set(this.gatewayUrl);
     this.settingsService.showOverlay.set(this.showOverlay);
     this.settingsService.overlayWidth.set(this.overlayWidth);
     this.settingsService.overlayHeight.set(this.overlayHeight);

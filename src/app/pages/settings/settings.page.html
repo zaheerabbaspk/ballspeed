@@ -85,6 +85,16 @@
             </div>
 
             <div class="space-y-2">
+              <label class="text-[10px] font-black uppercase tracking-widest text-blue-400">Gateway Server (Internal)</label>
+              <input 
+                [(ngModel)]="gatewayUrl"
+                placeholder="http://localhost:3000"
+                class="w-full bg-slate-900 border border-white/10 rounded-xl py-4 px-5 text-sm font-mono text-white/80 focus:border-blue-500 outline-none transition-all shadow-inner"
+              />
+              <p class="text-[9px] text-white/20 italic italic">Yeh aapke local server ka address hai jahan RTMP push ho raha hai.</p>
+            </div>
+
+            <div class="space-y-2">
               <label class="text-[10px] font-black uppercase tracking-widest text-blue-400">Stream Key</label>
               <div class="relative">
                 <input 

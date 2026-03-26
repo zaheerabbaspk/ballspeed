@@ -6,6 +6,7 @@ import { Injectable, signal } from '@angular/core';
 export class SettingsService {
   rtmpUrl = signal<string>('rtmps://live-api-s.facebook.com:443/rtmp/');
   rtmpKey = signal<string>('');
+  gatewayUrl = signal<string>('http://localhost:3000');
   overlayUrl = signal<string>('');
   mediaUrl = signal<string>('');
   showOverlay = signal<boolean>(false);
@@ -42,6 +43,7 @@ export class SettingsService {
     const data = {
       rtmpUrl: this.rtmpUrl(),
       rtmpKey: this.rtmpKey(),
+      gatewayUrl: this.gatewayUrl(),
       overlayUrl: this.overlayUrl(),
       mediaUrl: this.mediaUrl(),
       showOverlay: this.showOverlay(),
@@ -74,6 +76,7 @@ export class SettingsService {
         const data = JSON.parse(saved);
         this.rtmpUrl.set(data.rtmpUrl || '');
         this.rtmpKey.set(data.rtmpKey || '');
+        this.gatewayUrl.set(data.gatewayUrl || 'http://localhost:3000');
         this.overlayUrl.set(data.overlayUrl || '');
         this.mediaUrl.set(data.mediaUrl || '');
         this.showOverlay.set(data.showOverlay || false);

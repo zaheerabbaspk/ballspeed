@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { io, Socket } from 'socket.io-client';
 import * as mediasoupClient from 'mediasoup-client';
+import { SettingsService } from './settings.service';
 
 @Injectable({
   providedIn: 'root'
@@ -12,62 +13,76 @@ export class MediasoupService {
   private videoProducer: mediasoupClient.types.Producer | null = null;
   private audioProducer: mediasoupClient.types.Producer | null = null;
 
-  constructor() {
-    // Determine backend URL
-    const backendUrl = window.location.hostname === 'localhost' ? 'http://localhost:3000' : `http://${window.location.hostname}:3000`;
-    this.socket = io(backendUrl);
+  constructor(private settings: SettingsService) {
+    const backendUrl = this.settings.gatewayUrl();
+    console.log('[MediasoupService] Connecting to:', backendUrl);
+    this.socket = io(backendUrl, { transports: ['websocket'] });
   }
 
   async init() {
+    if (this.device) return;
+
     return new Promise<void>((resolve, reject) => {
-      this.socket.on('connect', async () => {
-        console.log('[MediasoupService] Connected to gateway');
-        try {
-          await this.loadDevice();
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
-      });
-      this.socket.on('connect_error', (err) => reject(err));
+      if (this.socket.connected) {
+        this.loadDevice().then(resolve).catch(reject);
+      } else {
+        this.socket.once('connect', async () => {
+          console.log('[MediasoupService] Connected to gateway');
+          try {
+            await this.loadDevice();
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        });
+        this.socket.once('connect_error', (err) => {
+          console.error('[MediasoupService] Connection error:', err);
+          reject(new Error('Backend Gateway Connection Failed'));
+        });
+      }
     });
   }
 
-  private async loadDevice() {
-    this.socket.emit('getRouterRtpCapabilities', async (rtpCapabilities: any) => {
-      this.device = new mediasoupClient.Device();
-      await this.device.load({ routerRtpCapabilities: rtpCapabilities });
-      console.log('[MediasoupService] Device loaded');
+  private async loadDevice(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.socket.emit('getRouterRtpCapabilities', async (rtpCapabilities: any) => {
+        try {
+          this.device = new mediasoupClient.Device();
+          await this.device.load({ routerRtpCapabilities: rtpCapabilities });
+          console.log('[MediasoupService] Device loaded successfully');
+          resolve();
+        } catch (err) {
+          console.error('[MediasoupService] Device load failed:', err);
+          reject(err);
+        }
+      });
+      
+      setTimeout(() => reject(new Error('Mediasoup Capabilities Timeout')), 5000);
     });
   }
 
   async produce(stream: MediaStream) {
     if (!this.device) throw new Error('Device not initialized');
 
-    // 1. Create Transport
     this.sendTransport = await this.createTransport();
 
-    // 2. Produce Video
     const videoTrack = stream.getVideoTracks()[0];
     if (videoTrack) {
       this.videoProducer = await this.sendTransport.produce({ track: videoTrack });
-      console.log('[MediasoupService] Video producer id:', this.videoProducer.id);
     }
 
-    // 3. Produce Audio
     const audioTrack = stream.getAudioTracks()[0];
     if (audioTrack) {
       this.audioProducer = await this.sendTransport.produce({ track: audioTrack });
-      console.log('[MediasoupService] Audio producer id:', this.audioProducer.id);
     }
 
     return this.videoProducer?.id || null;
   }
 
-  private async createTransport() {
-    return new Promise<mediasoupClient.types.Transport>((resolve, reject) => {
+  private async createTransport(): Promise<mediasoupClient.types.Transport> {
+    return new Promise((resolve, reject) => {
       this.socket.emit('createWebRtcTransport', {}, async (data: any) => {
-        if (data.error) return reject(data.error);
+        if (data.error) return reject(new Error(data.error));
 
         const transport = this.device!.createSendTransport(data);
 
@@ -100,9 +115,8 @@ export class MediasoupService {
     this.videoProducer?.close();
     this.audioProducer?.close();
     this.sendTransport?.close();
-  }
-
-  getProducerId() {
-    return this.videoProducer?.id || null;
+    this.videoProducer = null;
+    this.audioProducer = null;
+    this.sendTransport = null;
   }
 }
