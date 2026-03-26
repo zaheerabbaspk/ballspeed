@@ -1,6 +1,8 @@
 import { Injectable } from '@angular/core';
 import { SignalingService } from './signaling.service';
 import { Subject } from 'rxjs';
+import { Camera } from '@capacitor/camera';
+import { Capacitor } from '@capacitor/core';
 
 @Injectable({
   providedIn: 'root'
@@ -49,9 +51,17 @@ export class StreamingService {
    */
   async startProducing(targetPeerId: string = 'CONTROLLER') {
     try {
+      // Request native permissions first if on mobile
+      await this.requestNativePermissions();
+
       console.log('[StreamingService] Requesting local camera/mic...');
       this.localStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { width: 1280, height: 720, frameRate: 30 }, 
+        video: { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 }, 
+          frameRate: { ideal: 30 },
+          facingMode: { ideal: 'environment' }
+        }, 
         audio: true 
       });
 
@@ -148,4 +158,19 @@ export class StreamingService {
   }
 
   getPeerId() { return this.signaling.getPeerId(); }
+
+  private async requestNativePermissions() {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const permissions = await Camera.requestPermissions();
+        console.log('[StreamingService] Native Permissions:', permissions);
+        if (permissions.camera !== 'granted') {
+          throw new Error('Camera permission not granted on device.');
+        }
+      } catch (err) {
+        console.error('[StreamingService] Native Permission Error:', err);
+        throw err;
+      }
+    }
+  }
 }

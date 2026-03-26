@@ -52,9 +52,13 @@ export class CameraPage implements OnInit {
       this.isStreaming = true;
       this.status = 'Streaming Live';
       this.isFullscreen.set(true);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Streaming error:', error);
-      this.status = 'Error: ' + error;
+      if (error.name === 'NotAllowedError') {
+        this.status = 'Permission Denied! Please ALLOW camera/mic access in your browser settings and refresh.';
+      } else {
+        this.status = 'Error: ' + (error.message || error);
+      }
     }
   }
 
