@@ -9,6 +9,7 @@ const { URL } = require('url');
 const config = require('./config');
 
 const app = express();
+app.set('trust proxy', 1); // Trust Railway's proxy for secure cookies/headers
 app.use(cors());
 
 const httpServer = http.createServer(app);

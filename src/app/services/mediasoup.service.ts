@@ -19,7 +19,7 @@ export class MediasoupService {
   constructor(private settings: SettingsService) {
     const backendUrl = this.settings.gatewayUrl();
     console.log('[MediasoupService] Connecting to:', backendUrl);
-    this.socket = io(backendUrl, { transports: ['websocket'] });
+    this.socket = io(backendUrl);
 
     this.socket.on('signal', (data: any) => {
       console.log('[MediasoupService] Local Signal:', data.type);
