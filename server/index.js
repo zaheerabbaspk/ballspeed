@@ -35,23 +35,16 @@ httpServer.on('upgrade', (request, socket, head) => {
 });
 
 const io = socketIo(httpServer, {
-  path: '/socket.io', // Explicitly set default path to avoid confusion
   cors: { 
-    origin: (origin, callback) => {
-      // Reflect the requested origin if it's localhost or anything else
-      callback(null, true);
-    },
-    methods: ["GET", "POST"],
-    credentials: true,
-    allowedHeaders: ['my-custom-header'], // Keep custom if needed, but origins are open
+    origin: "*", // Simplest for production handshakes
+    methods: ["GET", "POST"]
   },
-
-
-  transports: ['websocket'], // Force websocket on server side
+  transports: ['websocket'],
   allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000
 });
+
 
 
 io.on('connection', (socket) => {
