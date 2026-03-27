@@ -36,15 +36,12 @@ httpServer.on('upgrade', (request, socket, head) => {
 
 const io = socketIo(httpServer, {
   cors: { 
-    origin: (origin, callback) => {
-      // Allow all origins for flexibility in development/production
-      callback(null, true);
-    },
-    methods: ['GET', 'POST'],
-    credentials: true,
-    allowedHeaders: ['my-custom-header'],
+    origin: true, // Required when credentials: true in Socket.io v4 to allow all
+    methods: ["GET", "POST"],
+    credentials: true
   },
-  transports: ['websocket', 'polling'], // Explicitly allow both, client will prefer websocket
+
+  transports: ['websocket'], // Force websocket on server side
   allowEIO3: true,
   pingTimeout: 60000,
   pingInterval: 25000
@@ -52,7 +49,8 @@ const io = socketIo(httpServer, {
 
 
 io.on('connection', (socket) => {
-  console.log('New connection:', socket.id);
+  console.log('[Socket.io] New connection:', socket.id);
+
 
   socket.on('join-room', (roomId) => {
     socket.join(roomId);

@@ -15,13 +15,14 @@ export class MediasoupService {
     console.log('[MediasoupService] Connecting to:', backendUrl);
     
     // Force websocket transport to bypass 502/CORS issues on Railway
-    this.socket = io(backendUrl, {
+    this.socket = io(backendUrl, { 
       transports: ['websocket'],
-      upgrade: false,
       reconnection: true,
       reconnectionAttempts: 10,
-      reconnectionDelay: 1000
+      reconnectionDelay: 2000,
+      timeout: 20000
     });
+
 
     this.socket.on('connect', () => {
       console.log('[MediasoupService] Connected to gateway via WebSocket');
@@ -50,13 +51,31 @@ export class MediasoupService {
    * Mock init for backward compatibility with components still calling it
    */
   async init() {
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       if (this.socket.connected) return resolve();
-      this.socket.once('connect', () => resolve());
-      // Don't block if connection takes too long
-      setTimeout(resolve, 3000);
+      
+      const onConnect = () => {
+        this.socket.off('connect_error', onConnectError);
+        resolve();
+      };
+      
+      const onConnectError = (err: any) => {
+        this.socket.off('connect', onConnect);
+        reject(new Error(`Connection failed: ${err.message}`));
+      };
+
+      this.socket.once('connect', onConnect);
+      this.socket.once('connect_error', onConnectError);
+      
+      // Set a reasonable timeout for the initial connection
+      setTimeout(() => {
+        this.socket.off('connect', onConnect);
+        this.socket.off('connect_error', onConnectError);
+        reject(new Error('Connection timeout after 10 seconds'));
+      }, 10000);
     });
   }
+
 
   stop() {
     this.socket.disconnect();
