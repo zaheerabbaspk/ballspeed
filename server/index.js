@@ -36,12 +36,20 @@ httpServer.on('upgrade', (request, socket, head) => {
 
 const io = socketIo(httpServer, {
   cors: { 
-    origin: '*', // Allow all for now to debug, can be restricted later
+    origin: (origin, callback) => {
+      // Allow all origins for flexibility in development/production
+      callback(null, true);
+    },
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ['my-custom-header'],
   },
-  allowEIO3: true // Support older clients if needed
+  transports: ['websocket', 'polling'], // Explicitly allow both, client will prefer websocket
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
+
 
 io.on('connection', (socket) => {
   console.log('New connection:', socket.id);
