@@ -16,12 +16,14 @@ export class MediasoupService {
     
     // Force websocket transport to bypass 502/CORS issues on Railway
     this.socket = io(backendUrl, { 
+      path: '/socket.io',
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 2000,
       timeout: 20000
     });
+
 
 
     this.socket.on('connect', () => {

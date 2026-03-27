@@ -35,11 +35,17 @@ httpServer.on('upgrade', (request, socket, head) => {
 });
 
 const io = socketIo(httpServer, {
+  path: '/socket.io', // Explicitly set default path to avoid confusion
   cors: { 
-    origin: true, // Required when credentials: true in Socket.io v4 to allow all
+    origin: (origin, callback) => {
+      // Reflect the requested origin if it's localhost or anything else
+      callback(null, true);
+    },
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ['my-custom-header'], // Keep custom if needed, but origins are open
   },
+
 
   transports: ['websocket'], // Force websocket on server side
   allowEIO3: true,

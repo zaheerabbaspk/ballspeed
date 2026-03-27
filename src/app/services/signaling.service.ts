@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Subject } from 'rxjs';
+import { Subject, BehaviorSubject } from 'rxjs';
+
 import { environment } from '../../environments/environment';
 
 @Injectable({
@@ -9,7 +10,8 @@ import { environment } from '../../environments/environment';
 export class SignalingService {
   private supabase: SupabaseClient | null = null;
   public message$ = new Subject<any>();
-  public status$ = new Subject<string>();
+  public status$ = new BehaviorSubject<string>('initializing');
+
   private currentRoomId: string | null = null;
   private peerId: any = self.crypto.randomUUID();
 
