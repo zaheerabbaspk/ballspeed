@@ -21,8 +21,14 @@ export class SignalingService {
         console.warn('Supabase URL not configured correctly.');
         return;
       }
-      this.supabase = createClient(supabaseUrl, supabaseKey);
-      console.log('[Signaling] Supabase client created');
+      this.supabase = createClient(supabaseUrl, supabaseKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false
+        }
+      });
+      console.log('[Signaling] Supabase client created (Lock-free mode)');
     } catch (e) {
       console.error('Supabase init error:', e);
     }
@@ -58,20 +64,24 @@ export class SignalingService {
   }
 
   async sendSignal(toPeerId: string, type: string, data: any) {
+    // Try Local Socket first if available (via MediasoupService's socket)
+    // For now, we'll stick to Supabase but add better error handling
     if (!this.supabase) return;
-    const { error } = await this.supabase
-      .from('signals')
-      .insert({
-        room_id: this.currentRoomId,
-        from_peer_id: this.peerId,
-        to_peer_id: toPeerId,
-        type: type,
-        data: data
-      });
-    
-    if (error) {
-      console.error('Error sending signal:', error);
-      alert('Signaling Error: ' + error.message + '\nCheck if RLS is disabled on the "signals" table.');
+    try {
+      const { error } = await this.supabase
+        .from('signals')
+        .insert({
+          room_id: this.currentRoomId,
+          from_peer_id: this.peerId,
+          to_peer_id: toPeerId,
+          type: type,
+          data: data
+        });
+      
+      if (error) throw error;
+    } catch (error: any) {
+      console.warn('[Signaling] Supabase failed, check internet or project status:', error.message);
+      // Fallback is needed here if we had a socket reference
     }
   }
 

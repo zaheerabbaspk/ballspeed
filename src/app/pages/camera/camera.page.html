@@ -47,7 +47,28 @@
     </div>
 
     <!-- Controls -->
-    <div *ngIf="!isFullscreen()" class="mt-4 md:mt-8">
+    <div *ngIf="!isFullscreen()" class="mt-4 md:mt-8 flex flex-col gap-4">
+      
+      <!-- Device Selector -->
+      <div *ngIf="!isStreaming" class="flex flex-col gap-2">
+        <label class="text-[10px] font-black uppercase tracking-widest text-slate-500">Select Source</label>
+        <div class="flex gap-2">
+          <select 
+            [value]="selectedDeviceId()" 
+            (change)="onDeviceChange($event)"
+            class="flex-1 bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-xs font-bold text-white focus:outline-none focus:border-rose-500/50 appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2024%2024%22%20stroke%3D%22white%22%3E%3Cpath%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%222%22%20d%3D%22m19%209-7%207-7-7%22%2F%3E%3C%2Fsvg%3E')] bg-[length:1.25rem] bg-[right_0.75rem_center] bg-no-repeat"
+          >
+            <option *ngFor="let device of devices()" [value]="device.deviceId">
+              {{ device.label || 'Camera ' + (device.deviceId | slice:0:4) }}
+            </option>
+            <option *ngIf="devices().length === 0" disabled>No Cameras Found</option>
+          </select>
+          <button (click)="ngOnInit()" class="bg-slate-800 p-3 rounded-xl border border-white/10 text-white/40 hover:text-white transition-all">
+            <ion-icon name="refresh-outline" class="text-xl"></ion-icon>
+          </button>
+        </div>
+      </div>
+
       <button 
         *ngIf="!isStreaming"
         (click)="startStreaming()"
@@ -63,7 +84,27 @@
         Broadcasting...
       </button>
 
-      <!-- Troubleshooting Section -->
+      <!-- Device in Use (NotReadableError) Troubleshooting -->
+      <div *ngIf="isNotReadable()" class="mt-6 flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div class="bg-rose-500/10 border border-rose-500/20 p-4 rounded-2xl flex flex-col gap-3">
+          <div class="flex items-center gap-2 mb-1">
+            <ion-icon name="warning-outline" class="text-rose-500 text-lg"></ion-icon>
+            <span class="text-[10px] font-black uppercase text-rose-500 tracking-widest">Device Busy</span>
+          </div>
+          <p class="text-[10px] text-white/60 leading-relaxed">
+            Your camera is being used by **another app** (OBS, Zoom, or another tab). 
+            Please **Close OBS** or other camera apps and then click **Retry**.
+          </p>
+          <div class="flex gap-2">
+            <button (click)="startStreaming()" 
+              class="flex-1 bg-rose-600 text-white text-[9px] font-black uppercase tracking-widest py-3 rounded-lg shadow-xl shadow-rose-600/20 transition-all active:scale-95">
+              I closed other apps • Retry
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Permission Denied Troubleshooting -->
       <div *ngIf="errorName() === 'NotAllowedError'" class="mt-6 flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
         <div class="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl flex flex-col gap-3">
           <div class="flex items-center gap-2 mb-1">

@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { Subject } from 'rxjs';
 import { io, Socket } from 'socket.io-client';
 import * as mediasoupClient from 'mediasoup-client';
 import { SettingsService } from './settings.service';
@@ -12,11 +13,26 @@ export class MediasoupService {
   private sendTransport: mediasoupClient.types.Transport | null = null;
   private videoProducer: mediasoupClient.types.Producer | null = null;
   private audioProducer: mediasoupClient.types.Producer | null = null;
+  
+  public onSignal = new Subject<any>();
 
   constructor(private settings: SettingsService) {
     const backendUrl = this.settings.gatewayUrl();
     console.log('[MediasoupService] Connecting to:', backendUrl);
     this.socket = io(backendUrl, { transports: ['websocket'] });
+
+    this.socket.on('signal', (data: any) => {
+      console.log('[MediasoupService] Local Signal:', data.type);
+      this.onSignal.next(data);
+    });
+  }
+
+  joinRoom(roomId: string) {
+    this.socket.emit('join-room', roomId);
+  }
+
+  sendSignal(roomId: string, toPeerId: string | null, type: string, data: any) {
+    this.socket.emit('signal', { roomId, toPeerId, type, data });
   }
 
   async init() {
@@ -67,12 +83,14 @@ export class MediasoupService {
     this.sendTransport = await this.createTransport();
 
     const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) {
+    if (videoTrack && videoTrack.readyState === 'live') {
       this.videoProducer = await this.sendTransport.produce({ track: videoTrack });
+    } else {
+      throw new Error('Video track is missing or ended');
     }
 
     const audioTrack = stream.getAudioTracks()[0];
-    if (audioTrack) {
+    if (audioTrack && audioTrack.readyState === 'live') {
       this.audioProducer = await this.sendTransport.produce({ track: audioTrack });
     }
 

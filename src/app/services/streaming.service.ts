@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { SignalingService } from './signaling.service';
+import { MediasoupService } from './mediasoup.service';
 import { Subject } from 'rxjs';
 import { Camera } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
@@ -11,6 +12,7 @@ export class StreamingService {
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   public remoteStream$ = new Subject<{ peerId: string, stream: MediaStream }>();
   public connectionState$ = new Subject<{ peerId: string, state: string }>();
+  private currentRoomId: string | null = null;
   private localStream: MediaStream | null = null;
   private candidateQueue: Map<string, RTCIceCandidateInit[]> = new Map();
 
@@ -22,45 +24,78 @@ export class StreamingService {
     ]
   };
 
-  constructor(private signaling: SignalingService) {}
+  constructor(
+    private signaling: SignalingService,
+    private mediasoup: MediasoupService
+  ) {}
+
+  private async sendSignal(toPeerId: string, type: string, data: any) {
+    // 1. Send via Supabase (Legacy)
+    this.signaling.sendSignal(toPeerId, type, data);
+    
+    // 2. Send via Local Gateway (New Reliable Fallback)
+    if (this.currentRoomId) {
+      this.mediasoup.sendSignal(this.currentRoomId, toPeerId, type, data);
+    }
+  }
 
   async init(roomId: string, customPeerId?: string) {
+    this.currentRoomId = roomId;
     console.log('[StreamingService] Initializing for room:', roomId, 'as:', customPeerId || 'RANDOM');
-    await this.signaling.joinRoom(roomId, customPeerId);
     
-    this.signaling.message$.subscribe(async (msg) => {
-      const { from_peer_id, type, data } = msg;
-      console.log('[StreamingService] Received signal:', type, 'from:', from_peer_id);
+    // 1. Join Local Gateway Room (FAST & RELIABLE)
+    try {
+      this.mediasoup.joinRoom(roomId);
+    } catch (e) {
+      console.warn('[StreamingService] Local join failed:', e);
+    }
+
+    // 2. Join Supabase Room (CLOUDY - Don't wait for it if it's failing)
+    this.signaling.joinRoom(roomId, customPeerId).catch(err => {
+      console.warn('[StreamingService] Supabase join failed, relying on local bridge:', err);
+    });
+
+    // Combine Signals from both Supabase and Local Gateway
+    const handleSignal = async (msg: any) => {
+      const { from_peer_id, fromPeerId, type, data } = msg;
+      const peerId = from_peer_id || fromPeerId;
+      if (!peerId) return;
+
+      console.log('[StreamingService] Received signal:', type, 'from:', peerId);
 
       switch (type) {
         case 'offer':
-          await this.handleOffer(from_peer_id, data);
+          await this.handleOffer(peerId, data);
           break;
         case 'answer':
-          await this.handleAnswer(from_peer_id, data);
+          await this.handleAnswer(peerId, data);
           break;
         case 'candidate':
-          await this.handleCandidate(from_peer_id, data);
+          await this.handleCandidate(peerId, data);
           break;
       }
-    });
+    };
+
+    this.signaling.message$.subscribe(handleSignal);
+    this.mediasoup.onSignal.subscribe(handleSignal);
   }
 
   /**
    * Called by the CAMERA to start sending video to the controller
    */
-  async startProducing(targetPeerId: string = 'CONTROLLER') {
+  async startProducing(targetPeerId: string = 'CONTROLLER', deviceId?: string) {
     try {
       // Request native permissions first if on mobile
       await this.requestNativePermissions();
 
-      console.log('[StreamingService] Requesting local camera/mic...');
+      console.log('[StreamingService] Requesting local camera/mic...', deviceId ? `(Device: ${deviceId})` : '');
       this.localStream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
+          deviceId: deviceId ? { exact: deviceId } : undefined,
           width: { ideal: 1280 }, 
           height: { ideal: 720 }, 
           frameRate: { ideal: 30 },
-          facingMode: { ideal: 'environment' }
+          facingMode: deviceId ? undefined : { ideal: 'environment' }
         }, 
         audio: true 
       });
@@ -74,7 +109,7 @@ export class StreamingService {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       
-      await this.signaling.sendSignal(targetPeerId, 'offer', offer);
+      await this.sendSignal(targetPeerId, 'offer', offer);
       return this.localStream;
     } catch (err) {
       console.error('[StreamingService] Error in startProducing:', err);
@@ -97,7 +132,7 @@ export class StreamingService {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     
-    await this.signaling.sendSignal(from, 'answer', answer);
+    await this.sendSignal(from, 'answer', answer);
   }
 
   private async handleAnswer(from: string, answer: RTCSessionDescriptionInit) {
@@ -135,7 +170,7 @@ export class StreamingService {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        this.signaling.sendSignal(peerId, 'candidate', event.candidate);
+        this.sendSignal(peerId, 'candidate', event.candidate);
       }
     };
 

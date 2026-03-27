@@ -4,7 +4,7 @@ import { IonContent, IonHeader, IonToolbar, IonTitle, IonButton, IonIcon, IonBad
 import { StreamingService } from '../../services/streaming.service';
 import { ActivatedRoute } from '@angular/router';
 import { addIcons } from 'ionicons';
-import { videocam, radioButtonOn, closeOutline } from 'ionicons/icons';
+import { videocam, radioButtonOn, closeOutline, refreshOutline, warningOutline } from 'ionicons/icons';
 
 @Component({
   selector: 'app-camera',
@@ -21,13 +21,16 @@ export class CameraPage implements OnInit {
   rtcStatus = signal<string>('new');
   isFullscreen = signal<boolean>(false);
   errorName = signal<string | null>(null);
+  devices = signal<MediaDeviceInfo[]>([]);
+  selectedDeviceId = signal<string | null>(null);
+  isNotReadable = signal<boolean>(false);
   private roomId: string | null = null;
 
   constructor(
     private streamingService: StreamingService,
     private route: ActivatedRoute
   ) {
-    addIcons({ videocam, 'radio-button-on': radioButtonOn, closeOutline });
+    addIcons({ videocam, 'radio-button-on': radioButtonOn, closeOutline, refreshOutline, warningOutline });
   }
 
   async ngOnInit() {
@@ -36,6 +39,9 @@ export class CameraPage implements OnInit {
 
     this.streamingService['signaling'].status$.subscribe(s => this.signalingStatus.set(s));
     this.streamingService.connectionState$.subscribe(s => this.rtcStatus.set(s.state));
+
+    // Initially populate devices
+    await this.logDevices();
   }
 
   async startStreaming() {
@@ -51,13 +57,15 @@ export class CameraPage implements OnInit {
 
       console.log('[CameraPage] Starting stream...');
       this.status = 'Requesting Camera...';
+      this.isNotReadable.set(false);
       try {
         await this.streamingService.init(this.roomId);
-        const stream = await this.streamingService.startProducing('CONTROLLER');
+        const stream = await this.streamingService.startProducing('CONTROLLER', this.selectedDeviceId() || undefined);
         if (this.localVideo) {
           this.localVideo.nativeElement.srcObject = stream;
         }
       } catch (err: any) {
+        console.error('[CameraPage] Service stream failed:', err);
         if (err.name === 'NotAllowedError') {
           console.log('[CameraPage] Video+Audio failed, trying Video-only fallback...');
           this.status = 'Retrying Video only...';
@@ -67,6 +75,9 @@ export class CameraPage implements OnInit {
           if (this.localVideo) {
             this.localVideo.nativeElement.srcObject = stream;
           }
+        } else if (err.name === 'NotReadableError') {
+          console.warn('[CameraPage] Device in use (NotReadableError)');
+          this.isNotReadable.set(true);
         }
         throw err;
       }
@@ -75,12 +86,14 @@ export class CameraPage implements OnInit {
       this.status = 'Streaming Live';
       this.isFullscreen.set(true);
     } catch (error: any) {
-      console.error('Streaming error:', error);
+      console.error('Streaming error summary:', error);
       this.errorName.set(error.name);
       if (error.name === 'NotAllowedError') {
         this.status = 'Permission Denied! Tap the [LOCK] icon next to the URL, select "Site Settings", and then click "Allow" for Camera/Mic.';
       } else if (error.name === 'NotFoundError') {
         this.status = 'Error: No camera/microphone found on this device.';
+      } else if (error.name === 'NotReadableError') {
+        this.status = 'Error: Camera is IN USE by another app (OBS, Zoom, etc.). Please close other apps and RETRY.';
       } else {
         this.status = 'Error: ' + (error.message || error);
       }
@@ -105,10 +118,27 @@ export class CameraPage implements OnInit {
 
   private async logDevices() {
     try {
+      // Chrome/Safari often hide labels until first permission is granted
+      // We'll try to get labels if possible
       const devices = await navigator.mediaDevices.enumerateDevices();
-      console.log('[CameraPage] Available devices:', devices.map(d => `${d.kind}: ${d.label} (${d.deviceId})`));
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      this.devices.set(videoDevices);
+      
+      if (videoDevices.length > 0 && !this.selectedDeviceId()) {
+        this.selectedDeviceId.set(videoDevices[0].deviceId);
+      }
+      
+      console.log('[CameraPage] Available devices:', videoDevices.map(d => `${d.label} (${d.deviceId})`));
     } catch (e) {
       console.error('[CameraPage] Enumerate devices failed:', e);
+    }
+  }
+
+  onDeviceChange(event: any) {
+    this.selectedDeviceId.set(event.target.value);
+    // If already streaming, restart with new device
+    if (this.isStreaming) {
+      this.startStreaming();
     }
   }
 

@@ -4,6 +4,7 @@ import { CommonModule } from '@angular/common';
 import { IonContent, IonHeader, IonToolbar, IonTitle, IonButton, IonIcon, IonBadge, IonGrid, IonRow, IonCol, ModalController } from '@ionic/angular/standalone';
 import { StreamingService } from '../../services/streaming.service';
 import { MediasoupService } from '../../services/mediasoup.service';
+import { RtmpService } from '../../services/rtmp.service';
 import { SettingsService } from '../../services/settings.service';
 import { SettingsPage } from '../settings/settings.page';
 import { ActivatedRoute } from '@angular/router';
@@ -86,6 +87,7 @@ export class ControllerPage implements OnInit, AfterViewInit {
   constructor(
     private streamingService: StreamingService,
     private mediasoup: MediasoupService,
+    private rtmpService: RtmpService,
     private route: ActivatedRoute,
     public studioSettings: SettingsService,
     private modalCtrl: ModalController,
@@ -169,8 +171,8 @@ export class ControllerPage implements OnInit, AfterViewInit {
     if (this.overlayContainer) {
       const containerWidth = this.overlayContainer.nativeElement.clientWidth;
       const containerHeight = this.overlayContainer.nativeElement.clientHeight;
-      const canvasWidth = this.studioSettings.overlayWidth() || 1920;
-      const canvasHeight = this.studioSettings.overlayHeight() || 1080;
+      const canvasWidth = 1280; // Force 720p for lag-free performance
+      const canvasHeight = 720;
 
       if (containerWidth > 0 && containerHeight > 0) {
         const scaleX = containerWidth / canvasWidth;
@@ -460,22 +462,38 @@ export class ControllerPage implements OnInit, AfterViewInit {
 
     try {
       this.isRtmpStreaming.set(true);
+      
+      // 1. Kickstart compositing loop
       this.startCompositing();
       
-      const stream = this.composingCanvas.nativeElement.captureStream(30);
-      // We need to add the audio track from the active camera if available
-      if (this.activeStream()) {
-        this.activeStream()!.getAudioTracks().forEach(track => stream.addTrack(track));
-      }
+      // 2. Wait for first canvas frame
+      await new Promise(resolve => setTimeout(resolve, 500));
 
-      await this.mediasoup.produce(stream);
-      const res = await this.mediasoup.startRtmp(`${url}${key}`);
+      const canvas = this.composingCanvas.nativeElement;
+      const stream = canvas.captureStream(30); // 30fps for professional smoothness
       
-      if (res.error) {
-        throw new Error(res.error);
+      // 3. Add active camera's audio track if live
+      const activeStream = this.activeStream();
+      if (activeStream) {
+        activeStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
+          if (track.readyState === 'live') {
+            stream.addTrack(track);
+            console.log('[Controller] Added live audio track');
+          }
+        });
       }
 
-      console.log('RTMP Push started');
+      // 4. Verify video track
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack || videoTrack.readyState === 'ended') {
+        throw new Error('Canvas video track failed to start');
+      }
+
+      // 5. Start RTMP via WebSocket + MediaRecorder (NEW simple pipeline)
+      const rtmpFullUrl = `${url}${key}`;
+      await this.rtmpService.start(stream, rtmpFullUrl);
+
+      console.log('RTMP Push started (WebSocket pipeline)');
     } catch (err) {
       console.error('Failed to start RTMP:', err);
       alert('RTMP Error: ' + (err as any).message);
@@ -486,12 +504,14 @@ export class ControllerPage implements OnInit, AfterViewInit {
   private stopRtmp() {
     this.isRtmpStreaming.set(false);
     if (this.compFrameId) cancelAnimationFrame(this.compFrameId);
-    this.mediasoup.stop();
+    this.rtmpService.stop();
     console.log('RTMP Push stopped');
   }
 
   private startCompositing() {
     const canvas = this.composingCanvas.nativeElement;
+    canvas.width = 1280; // Force 720p
+    canvas.height = 720;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
