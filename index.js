@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http');
+console.log('--- BallSpeed WebRTC Gateway v1.1 starting... ---');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const { spawn } = require('child_process');
