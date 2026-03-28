@@ -1,7 +1,0 @@
-{
-  "name": "ballspeed",
-  "integrations": {
-    "capacitor": {}
-  },
-  "type": "angular-standalone"
-}
