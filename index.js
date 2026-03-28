@@ -50,6 +50,7 @@ io.on('connection', (socket) => {
   socket.on('createWebRtcTransport', async (data, callback) => {
     try {
       const transport = await router.createWebRtcTransport(config.mediasoup.webRtcTransport);
+      transport.appData.socketId = socket.id;
       transports.set(transport.id, transport);
 
       transport.on('dtlsstatechange', (dtlsState) => {
@@ -101,6 +102,20 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('Socket disconnected:', socket.id);
+    // Cleanup any transports created by this socket
+    for (const [id, transport] of transports.entries()) {
+      if (transport.appData.socketId === socket.id) {
+        transport.close();
+        transports.delete(id);
+      }
+    }
+    // Cleanup any session
+    for (const [id, session] of sessions.entries()) {
+        if (session.socket.id === socket.id) {
+            session.stop();
+            sessions.delete(id);
+        }
+    }
   });
 });
 
@@ -114,38 +129,62 @@ class StreamingSession {
     this.producers = { video: null, audio: null };
     this.ffmpeg = null;
     this.plainTransports = { video: null, audio: null };
+    this.isDead = false;
+    
+    console.log(`[Session] Created for RTMP: ${rtmpUrl.split('?')[0]}`);
   }
 
   async addProducer(producer) {
+    if (this.isDead) return;
+    
+    // Close old producer of same kind if exists
+    if (this.producers[producer.kind]) {
+      console.log(`[Session] Closing old ${producer.kind} producer`);
+      this.producers[producer.kind].close();
+    }
+
     this.producers[producer.kind] = producer;
     
     // Create PlainTransport for this track
-    this.plainTransports[producer.kind] = await router.createPlainTransport({
-      listenIp: '127.0.0.1',
-      rtcpMux: false,
-      comedia: false
-    });
+    if (this.plainTransports[producer.kind]) {
+      this.plainTransports[producer.kind].close();
+    }
 
-    const transport = this.plainTransports[producer.kind];
-    const consumer = await transport.consume({
-      producerId: producer.id,
-      rtpCapabilities: router.rtpCapabilities,
-      paused: false
-    });
+    try {
+      this.plainTransports[producer.kind] = await router.createPlainTransport({
+        listenIp: '127.0.0.1',
+        rtcpMux: false,
+        comedia: false
+      });
 
-    transport.appData.consumer = consumer;
+      const transport = this.plainTransports[producer.kind];
+      const consumer = await transport.consume({
+        producerId: producer.id,
+        rtpCapabilities: router.rtpCapabilities,
+        paused: false
+      });
 
-    // Wait for both tracks or a timeout to start FFmpeg
-    if (this.producers.video || this.producers.audio) {
-      this.maybeStartFfmpeg();
+      transport.appData.consumer = consumer;
+
+      console.log(`[Session] Added ${producer.kind} track to pipeline`);
+
+      // Always try to start/restart FFmpeg when a new producer arrives
+      this.restartFfmpeg();
+    } catch (err) {
+      console.error(`[Session] Failed to add producer:`, err);
     }
   }
 
-  async maybeStartFfmpeg() {
-    if (this.ffmpeg) return;
+  restartFfmpeg() {
+    if (this.ffmpeg) {
+      this.ffmpeg.kill('SIGTERM');
+      this.ffmpeg = null;
+    }
 
-    // Start FFmpeg if we have what we need
-    console.log(`[RTMP] Starting multi-track FFmpeg for session...`);
+    // Must have at least video to start for Facebook
+    if (!this.producers.video) return;
+
+    console.log(`[RTMP] Spawning Production FFmpeg v1.2 (CBR 2500k)...`);
 
     const videoTransport = this.plainTransports.video;
     const audioTransport = this.plainTransports.audio;
@@ -168,12 +207,15 @@ t=0 0\n`;
       sdp += `a=rtpmap:${consumer.rtpParameters.codecs[0].payloadType} ${consumer.rtpParameters.codecs[0].mimeType.split('/')[1]}/${consumer.rtpParameters.codecs[0].clockRate}\n`;
     }
 
+    // Strict Facebook Live Requirements
     const ffmpegArgs = [
       '-loglevel', 'info',
       '-protocol_whitelist', 'file,rtp,udp,pipe',
       '-i', 'pipe:0',
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-      '-pix_fmt', 'yuv420p', '-b:v', '1500k', '-g', '60',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
+      '-pix_fmt', 'yuv420p', 
+      '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k', 
+      '-r', '30', '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
       '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
       '-f', 'flv', this.rtmpUrl
     ];
@@ -188,17 +230,28 @@ t=0 0\n`;
           const match = msg.match(/frame=\s*(\d+)/);
           if (match) this.socket.emit('rtmp-progress', { frame: match[1] });
       }
+      if (msg.includes('Error') || msg.includes('fatal')) {
+          console.error('[FFmpeg-Log]', msg.trim());
+      }
     });
 
-    this.ffmpeg.on('exit', () => {
-      this.stop();
+    this.ffmpeg.on('exit', (code) => {
+      console.log(`[FFmpeg-Exit] Code: ${code}`);
+      if (code !== 0 && !this.isDead) {
+          // Auto-recovery: Re-spawn after delay if session still active
+          setTimeout(() => this.restartFfmpeg(), 2000);
+      }
     });
   }
 
   stop() {
-    if (this.ffmpeg) this.ffmpeg.kill('SIGTERM');
-    this.ffmpeg = null;
+    this.isDead = true;
+    if (this.ffmpeg) {
+      this.ffmpeg.kill('SIGTERM');
+      this.ffmpeg = null;
+    }
     Object.values(this.plainTransports).forEach(t => t?.close());
+    console.log('[Session] Stopped and cleaned up');
   }
 }
 
