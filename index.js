@@ -5,7 +5,19 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const { spawn } = require('child_process');
 const mediasoup = require('mediasoup');
+const axios = require('axios');
 const config = require('./config');
+
+const updatePublicIp = async () => {
+  try {
+    const res = await axios.get('https://api.ipify.org?format=json');
+    const publicIp = res.data.ip;
+    console.log('[Mediasoup] Detected Public IP:', publicIp);
+    config.mediasoup.webRtcTransport.listenIps[0].announcedIp = publicIp;
+  } catch (err) {
+    console.warn('[Mediasoup] Could not detect public IP, falling back to DOMAIN or 127.0.0.1');
+  }
+};
 
 const app = express();
 app.set('trust proxy', 1);
@@ -37,7 +49,12 @@ const initMediasoup = async () => {
   console.log('[Mediasoup] Worker and Router initialized');
 };
 
-initMediasoup();
+const init = async () => {
+    await updatePublicIp();
+    await initMediasoup();
+};
+
+init();
 
 // --- Socket.io Handlers ---
 io.on('connection', (socket) => {

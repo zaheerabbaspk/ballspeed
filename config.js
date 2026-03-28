@@ -7,7 +7,7 @@ module.exports = {
     // Worker settings
     worker: {
       rtcMinPort: 10000,
-      rtcMaxPort: 10100,
+      rtcMaxPort: 10500,
       logLevel: 'warn',
       logTags: [
         'info',
@@ -53,7 +53,7 @@ module.exports = {
       listenIps: [
         {
           ip: '0.0.0.0',
-          announcedIp: '127.0.0.1', // Change to your public IP for remote access
+          announcedIp: process.env.ANNOUNCED_IP || process.env.DOMAIN || '127.0.0.1', 
         },
       ],
       maxSctpSendBufferSize: 262144,
