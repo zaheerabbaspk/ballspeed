@@ -86,141 +86,135 @@ wss.on('connection', (ws, request) => {
     return;
   }
 
-  console.log('[RTMP-WS] New connection, target:', rtmpUrl);
+  console.log('[RTMP-WS] New connection established');
   
   let ffmpeg = null;
-  let chunkCount = 0;
-  let totalBytes = 0;
   let buffer = [];
   let bufferSize = 0;
-  const START_BUFFER_THRESHOLD = 16 * 1024; // 16 KB for clean Packet-Pure start
-  let mimeType = 'video/webm;codecs=vp8,opus'; 
+  const START_BUFFER_THRESHOLD = 32 * 1024; // 32 KB for clean start
   let headerFound = false;
+  let isRestarting = false;
 
-  ws.on('message', (message, isBinary) => {
-    if (!isBinary) {
-      try {
-        const msg = JSON.parse(message.toString());
-        if (msg.type === 'config') {
-          mimeType = msg.mimeType;
-          console.log('[RTMP-WS] Config received:', mimeType);
-        }
-        return;
-      } catch (e) { return; }
-    }
-
-    const data = message;
-    if (!data || data.length === 0) return;
+  const startFfmpeg = () => {
+    if (ffmpeg) return;
     
-    totalBytes += data.length;
-    if (chunkCount++ % 10 === 0) { // Log every 10th chunk to avoid spamming
-        console.log(`[RTMP-WS] Received chunk #${chunkCount}, size: ${data.length}, total: ${totalBytes}`);
-    }
+    console.log(`[RTMP-WS] Spawning Production FFmpeg Pipeline to: ${rtmpUrl.split('?')[0]}...`);
+    
+    // Production-grade settings for Facebook Live (720p, 30fps, 2s keyframes)
+    const ffmpegArgs = [
+      '-loglevel', 'info',
+      '-f', 'matroska',
+      '-i', 'pipe:0',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-tune', 'zerolatency',
+      '-pix_fmt', 'yuv420p',
+      '-b:v', '2500k',
+      '-maxrate', '2500k',
+      '-bufsize', '5000k',
+      '-g', '60', // 2s keyframe interval for 30fps
+      '-keyint_min', '60',
+      '-sc_threshold', '0',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-ar', '44100',
+      '-f', 'flv',
+      '-tls_verify', '0',
+      '-flvflags', 'no_duration_filesize',
+      rtmpUrl
+    ];
 
-    // Strict WebM/EBML header detection (0x1A 0x45 0xDF 0xA3)
-    if (!headerFound) {
-      const idx = data.indexOf(Buffer.from([0x1A, 0x45, 0xDF, 0xA3]));
-      if (idx !== -1) {
-        console.log('[RTMP-WS] EBML Header detected. Starting pure stream...');
-        headerFound = true;
-        const headData = data.slice(idx);
-        buffer.push(headData);
-        bufferSize += headData.length;
-      } else {
-        return; // Ignore data until we see a fresh header
-      }
-    } else if (!ffmpeg) {
-      buffer.push(data);
-      bufferSize += data.length;
-    }
-
-    // Spawn FFmpeg once buffer is sufficient for stable probing
-    if (headerFound && !ffmpeg && bufferSize >= START_BUFFER_THRESHOLD) {
-      console.log(`[RTMP-WS] Spawning Packet-Pure Stream (Buffer: ${bufferSize} bytes)...`);
+    try {
+      ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs);
       
-      const ffmpegArgs = [
-        '-loglevel', 'info',
-        // '-re', // Removed for live relay to prevent sync lag
-        '-use_wallclock_as_timestamps', '1',
-        '-fflags', '+genpts+nobuffer+igndts+flush_packets+discardcorrupt',
-        '-probesize', '32',
-        '-analyzeduration', '0',
-        '-flags', '+low_delay',
-        '-avoid_negative_ts', 'make_zero',
-        '-f', 'matroska',
-        '-i', 'pipe:0',
-        '-vf', 'fps=30,scale=960:540,format=yuv420p',
-        '-c:v', 'libx264',
-        '-preset', 'superfast',
-        '-tune', 'zerolatency',
-        '-b:v', '1500k', 
-        '-maxrate', '2000k',
-        '-bufsize', '3000k', 
-        '-g', '30',
-        '-rtmp_buffer', '100',
-        '-rtmp_live', 'live',
-        '-af', 'aresample=async=1:min_hard_comp=0.100000:first_pts=0',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-flvflags', 'no_duration_filesize',
-        '-flush_packets', '1',
-        '-f', 'flv',
-        '-tls_verify', '0', 
-        rtmpUrl
-      ];
+      ffmpeg.on('error', (err) => {
+        console.error('[FFmpeg-Fatal] Spawn error:', err.message);
+        ws.send('FFMPEG-ERROR: Spawn failed: ' + err.message);
+      });
 
-      try {
-        ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs);
-        
-        ffmpeg.on('error', (err) => {
-          console.error('[FFmpeg-Fatal] Spawn error:', err.message);
-          ws.close(1011, 'FFmpeg failed to start');
-        });
-
-        // Flush initial stable buffer
+      // Flush current buffer
+      if (buffer.length > 0) {
+        console.log(`[RTMP-WS] Flushing ${buffer.length} chunks to new FFmpeg instance`);
         buffer.forEach(chunk => {
           if (ffmpeg && ffmpeg.stdin.writable) ffmpeg.stdin.write(chunk);
         });
-        buffer = [];
-
-        ffmpeg.stderr.on('data', (stderr) => {
-          const msg = stderr.toString();
-          if (msg.includes('frame=')) {
-            const match = msg.match(/frame=\s*(\d+)/);
-            if (match) ws.send(`PROGRESS: frame=${match[1]}`);
-          }
-          if (msg.includes('Error') || msg.includes('fatal') || msg.includes('Invalid') || msg.includes('Abnormally')) {
-            console.log('[FFmpeg-Log]', msg.trim());
-            ws.send('FFMPEG-ERROR: ' + msg.trim());
-          }
-        });
-
-        ffmpeg.on('exit', (code) => {
-          console.log(`[FFmpeg-Exit] Code: ${code}`);
-          ffmpeg = null;
-          // Force client reconnect for new headers if FFmpeg died
-          if (code !== 0 && code !== null) {
-            ws.close(1011, 'FFmpeg process terminated abnormally');
-          }
-        });
-
-        ffmpeg.stdin.on('error', (err) => console.error('[FFmpeg-Stdin-Error]', err.message));
-      } catch (err) {
-        console.error('[FFmpeg-Exception]', err.message);
-        ws.close(1011, 'FFmpeg initialization exception');
       }
-      return;
+
+      ffmpeg.stderr.on('data', (stderr) => {
+        const msg = stderr.toString();
+        if (msg.includes('frame=')) {
+          const match = msg.match(/frame=\s*(\d+)/);
+          if (match) ws.send(`PROGRESS: frame=${match[1]}`);
+        }
+        if (msg.includes('Error') || msg.includes('fatal') || msg.includes('Invalid')) {
+          console.log('[FFmpeg-Log]', msg.trim());
+          ws.send('FFMPEG-ERROR: ' + msg.trim());
+        }
+      });
+
+      ffmpeg.on('exit', (code) => {
+        console.log(`[FFmpeg-Exit] Code: ${code}`);
+        ffmpeg = null;
+        if (code !== 0 && !isRestarting) {
+            console.log('[RTMP-WS] FFmpeg died unexpectedly. Attempting auto-restart...');
+            ws.send('SYSTEM-NOTICE: RTMP connection lost, restarting...');
+            setTimeout(() => {
+                if (headerFound) startFfmpeg();
+            }, 2000);
+        }
+      });
+
+      ffmpeg.stdin.on('error', (err) => {
+        console.error('[FFmpeg-Stdin-Error]', err.message);
+        // Don't kill the whole process on broken pipe
+      });
+
+    } catch (err) {
+      console.error('[FFmpeg-Exception]', err.message);
+      ws.send('FFMPEG-ERROR: Exception: ' + err.message);
+    }
+  };
+
+  ws.on('message', (message, isBinary) => {
+    if (!isBinary) return; // Ignore non-binary setup messages for simplicity now
+
+    const data = message;
+    if (!data || data.length === 0) return;
+
+    // 1. Always keep a small rolling buffer of the last few seconds for restarts
+    buffer.push(data);
+    if (buffer.length > 5) buffer.shift(); // Keep last ~5 seconds (assuming 1s chunks)
+
+    // 2. Header Detection (Only once per WebSocket session)
+    if (!headerFound) {
+      const idx = data.indexOf(Buffer.from([0x1A, 0x45, 0xDF, 0xA3]));
+      if (idx !== -1) {
+        console.log('[RTMP-WS] EBML Header detected. Stream session active.');
+        headerFound = true;
+        buffer = [data.slice(idx)]; // Reset buffer to start from header
+        bufferSize = buffer[0].length;
+      } else {
+        return; // Ignore data until we see a fresh header
+      }
+    } else {
+        bufferSize += data.length;
     }
 
-    // Continuous piping
-    if (ffmpeg && ffmpeg.stdin.writable) {
-      ffmpeg.stdin.write(data);
+    // 3. Start/Pipe
+    if (headerFound) {
+        if (!ffmpeg && !isRestarting) {
+            if (bufferSize >= START_BUFFER_THRESHOLD) {
+                startFfmpeg();
+            }
+        } else if (ffmpeg && ffmpeg.stdin.writable) {
+            ffmpeg.stdin.write(data);
+        }
     }
   });
 
   ws.on('close', () => {
     console.log('[RTMP-WS] Client disconnected');
+    isRestarting = true; // Prevent auto-restart
     if (ffmpeg) {
       ffmpeg.stdin.end();
       ffmpeg.kill('SIGTERM');
@@ -230,6 +224,7 @@ wss.on('connection', (ws, request) => {
 
   ws.on('error', (err) => {
     console.error('[RTMP-WS] WebSocket error:', err);
+    isRestarting = true;
     if (ffmpeg) {
       ffmpeg.stdin.end();
       ffmpeg.kill('SIGTERM');
