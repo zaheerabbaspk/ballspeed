@@ -93,7 +93,7 @@ wss.on('connection', (ws, request) => {
   let totalBytes = 0;
   let buffer = [];
   let bufferSize = 0;
-  const START_BUFFER_THRESHOLD = 32 * 1024; // 32 KB for clean Packet-Pure start
+  const START_BUFFER_THRESHOLD = 16 * 1024; // 16 KB for clean Packet-Pure start
   let mimeType = 'video/webm;codecs=vp8,opus'; 
   let headerFound = false;
 
@@ -135,11 +135,11 @@ wss.on('connection', (ws, request) => {
       
       const ffmpegArgs = [
         '-loglevel', 'info',
-        '-re',
+        // '-re', // Removed for live relay to prevent sync lag
         '-use_wallclock_as_timestamps', '1',
         '-fflags', '+genpts+nobuffer+igndts+flush_packets+discardcorrupt',
-        '-probesize', '1M',
-        '-analyzeduration', '1M',
+        '-probesize', '32',
+        '-analyzeduration', '0',
         '-flags', '+low_delay',
         '-avoid_negative_ts', 'make_zero',
         '-f', 'matroska',
