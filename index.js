@@ -3,65 +3,98 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const { spawn } = require('child_process');
-const { WebSocketServer } = require('ws');
-const { URL } = require('url');
+const mediasoup = require('mediasoup');
+const config = require('./config');
 
 const app = express();
-app.set('trust proxy', 1); // Trust Railway's proxy for secure cookies/headers
+app.set('trust proxy', 1);
 app.use(cors());
 
 const httpServer = http.createServer(app);
-
-// ========================================
-// 1. WebSocket RTMP Pipeline Upgrade Handler (MOVED BEFORE SOCKET.IO)
-// ========================================
-const PORT = process.env.PORT || 3000;
-const wss = new WebSocketServer({ noServer: true });
-// Production: Render uses linux 'ffmpeg'. Local: User's temporary path.
-const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg'; 
-
-httpServer.on('upgrade', (request, socket, head) => {
-  try {
-    const { pathname } = new URL(request.url, `http://${request.headers.host}`);
-    if (pathname === '/rtmp') {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-      });
-      return; 
-    }
-  } catch (err) {
-    console.error('[Upgrade] Error:', err.message);
-  }
-});
-
 const io = socketIo(httpServer, {
-  cors: { 
-    origin: "*", // Simplest for production handshakes
-    methods: ["GET", "POST"]
-  },
-  transports: ['websocket'],
-  allowEIO3: true,
-  pingTimeout: 60000,
-  pingInterval: 25000
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  transports: ['websocket']
 });
 
+const PORT = process.env.PORT || 3000;
+const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
 
+// --- Mediasoup State ---
+let worker;
+let router;
+const transports = new Map(); // transportId -> transport
+const producers = new Map();  // producerId -> producer
 
+const initMediasoup = async () => {
+  worker = await mediasoup.createWorker(config.mediasoup.worker);
+  worker.on('died', () => {
+    console.error('Mediasoup worker died, exiting in 2 seconds...');
+    setTimeout(() => process.exit(1), 2000);
+  });
+
+  router = await worker.createRouter(config.mediasoup.router);
+  console.log('[Mediasoup] Worker and Router initialized');
+};
+
+initMediasoup();
+
+// --- Socket.io Handlers ---
 io.on('connection', (socket) => {
   console.log('[Socket.io] New connection:', socket.id);
 
-
-  socket.on('join-room', (roomId) => {
-    socket.join(roomId);
-    console.log(`Socket ${socket.id} joined room ${roomId}`);
+  socket.on('getRouterRtpCapabilities', (callback) => {
+    callback(router.rtpCapabilities);
   });
 
-  socket.on('signal', (data) => {
-    // data: { roomId, toPeerId, type, data }
-    if (data.toPeerId) {
-      socket.to(data.toPeerId).emit('signal', { fromPeerId: socket.id, ...data });
-    } else {
-      socket.to(data.roomId).emit('signal', { fromPeerId: socket.id, ...data });
+  socket.on('createWebRtcTransport', async (data, callback) => {
+    try {
+      const transport = await router.createWebRtcTransport(config.mediasoup.webRtcTransport);
+      transports.set(transport.id, transport);
+
+      transport.on('dtlsstatechange', (dtlsState) => {
+        if (dtlsState === 'closed') transport.close();
+      });
+
+      callback({
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters
+      });
+    } catch (err) {
+      console.error('CreateWebRtcTransport error:', err);
+      callback({ error: err.message });
+    }
+  });
+
+  socket.on('connectWebRtcTransport', async ({ transportId, dtlsParameters }, callback) => {
+    const transport = transports.get(transportId);
+    if (!transport) return callback({ error: 'Transport not found' });
+    await transport.connect({ dtlsParameters });
+    callback();
+  });
+
+  socket.on('produce', async ({ transportId, kind, rtpParameters, rtmpUrl }, callback) => {
+    const transport = transports.get(transportId);
+    if (!transport) return callback({ error: 'Transport not found' });
+
+    try {
+      const producer = await transport.produce({ kind, rtpParameters });
+      producers.set(producer.id, producer);
+
+      console.log(`[Mediasoup] New producer: ${producer.id} (${kind})`);
+
+      // If we have a producer, we can start FFmpeg
+      // In this version, we trigger FFmpeg when both audio and video might be present,
+      // or just one if it's a single track stream.
+      if (rtmpUrl) {
+         startRtmpStreaming(producer, rtmpUrl, socket, transportId);
+      }
+
+      callback({ id: producer.id });
+    } catch (err) {
+      console.error('Produce error:', err);
+      callback({ error: err.message });
     }
   });
 
@@ -70,172 +103,113 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- FFmpeg & RTMP Logic ---
+const sessions = new Map(); // transportId -> Session
 
-// ========================================
-// WebSocket RTMP Pipeline (MediaRecorder -> FFmpeg)
-// ========================================
-// wss and FFMPEG_PATH are defined above, before io initialization
-
-wss.on('connection', (ws, request) => {
-  const params = new URL(request.url, 'http://localhost').searchParams;
-  const rtmpUrl = params.get('url');
-  
-  if (!rtmpUrl) {
-    ws.send('ERROR: No RTMP URL provided');
-    ws.close();
-    return;
+class StreamingSession {
+  constructor(socket, rtmpUrl) {
+    this.socket = socket;
+    this.rtmpUrl = rtmpUrl;
+    this.producers = { video: null, audio: null };
+    this.ffmpeg = null;
+    this.plainTransports = { video: null, audio: null };
   }
 
-  console.log('[RTMP-WS] New connection established');
-  
-  let ffmpeg = null;
-  let buffer = [];
-  let bufferSize = 0;
-  const START_BUFFER_THRESHOLD = 32 * 1024; // 32 KB for clean start
-  let headerFound = false;
-  let isRestarting = false;
+  async addProducer(producer) {
+    this.producers[producer.kind] = producer;
+    
+    // Create PlainTransport for this track
+    this.plainTransports[producer.kind] = await router.createPlainTransport({
+      listenIp: '127.0.0.1',
+      rtcpMux: false,
+      comedia: false
+    });
 
-  const startFfmpeg = () => {
-    if (ffmpeg) return;
-    
-    console.log(`[RTMP-WS] Spawning Production FFmpeg Pipeline to: ${rtmpUrl.split('?')[0]}...`);
-    
-    // Production-grade settings for Facebook Live (720p, 30fps, 2s keyframes)
+    const transport = this.plainTransports[producer.kind];
+    const consumer = await transport.consume({
+      producerId: producer.id,
+      rtpCapabilities: router.rtpCapabilities,
+      paused: false
+    });
+
+    transport.appData.consumer = consumer;
+
+    // Wait for both tracks or a timeout to start FFmpeg
+    if (this.producers.video || this.producers.audio) {
+      this.maybeStartFfmpeg();
+    }
+  }
+
+  async maybeStartFfmpeg() {
+    if (this.ffmpeg) return;
+
+    // Start FFmpeg if we have what we need
+    console.log(`[RTMP] Starting multi-track FFmpeg for session...`);
+
+    const videoTransport = this.plainTransports.video;
+    const audioTransport = this.plainTransports.audio;
+
+    let sdp = `v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Mediasoup
+c=IN IP4 127.0.0.1
+t=0 0\n`;
+
+    if (videoTransport) {
+      const consumer = videoTransport.appData.consumer;
+      sdp += `m=video ${videoTransport.tuple.localPort} RTP/AVP ${consumer.rtpParameters.codecs[0].payloadType}\n`;
+      sdp += `a=rtpmap:${consumer.rtpParameters.codecs[0].payloadType} ${consumer.rtpParameters.codecs[0].mimeType.split('/')[1]}/${consumer.rtpParameters.codecs[0].clockRate}\n`;
+    }
+
+    if (audioTransport) {
+      const consumer = audioTransport.appData.consumer;
+      sdp += `m=audio ${audioTransport.tuple.localPort} RTP/AVP ${consumer.rtpParameters.codecs[0].payloadType}\n`;
+      sdp += `a=rtpmap:${consumer.rtpParameters.codecs[0].payloadType} ${consumer.rtpParameters.codecs[0].mimeType.split('/')[1]}/${consumer.rtpParameters.codecs[0].clockRate}\n`;
+    }
+
     const ffmpegArgs = [
       '-loglevel', 'info',
-      '-f', 'matroska',
+      '-protocol_whitelist', 'file,rtp,udp,pipe',
       '-i', 'pipe:0',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-tune', 'zerolatency',
-      '-pix_fmt', 'yuv420p',
-      '-vf', 'fps=30,scale=1280:720',
-      '-b:v', '1500k',
-      '-maxrate', '1500k',
-      '-bufsize', '3000k',
-      '-g', '60', // 2s keyframe interval for 30fps
-      '-keyint_min', '60',
-      '-sc_threshold', '0',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-ar', '44100',
-      '-f', 'flv',
-      '-tls_verify', '0',
-      '-flvflags', 'no_duration_filesize',
-      rtmpUrl
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+      '-pix_fmt', 'yuv420p', '-b:v', '1500k', '-g', '60',
+      '-c:a', 'aac', '-b:a', '128k', '-ar', '44100',
+      '-f', 'flv', this.rtmpUrl
     ];
 
-    try {
-      ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs);
-      
-      ffmpeg.on('error', (err) => {
-        console.error('[FFmpeg-Fatal] Spawn error:', err.message);
-        ws.send('FFMPEG-ERROR: Spawn failed: ' + err.message);
-      });
+    this.ffmpeg = spawn(FFMPEG_PATH, ffmpegArgs);
+    this.ffmpeg.stdin.write(sdp);
+    this.ffmpeg.stdin.end();
 
-      // Flush current buffer
-      if (buffer.length > 0) {
-        console.log(`[RTMP-WS] Flushing ${buffer.length} chunks to new FFmpeg instance`);
-        buffer.forEach(chunk => {
-          if (ffmpeg && ffmpeg.stdin.writable) ffmpeg.stdin.write(chunk);
-        });
-      }
-
-      ffmpeg.stderr.on('data', (stderr) => {
-        const msg = stderr.toString();
-        if (msg.includes('frame=')) {
+    this.ffmpeg.stderr.on('data', (data) => {
+      const msg = data.toString();
+      if (msg.includes('frame=')) {
           const match = msg.match(/frame=\s*(\d+)/);
-          if (match) ws.send(`PROGRESS: frame=${match[1]}`);
-        }
-        if (msg.includes('Error') || msg.includes('fatal') || msg.includes('Invalid')) {
-          console.log('[FFmpeg-Log]', msg.trim());
-          ws.send('FFMPEG-ERROR: ' + msg.trim());
-        }
-      });
-
-      ffmpeg.on('exit', (code) => {
-        console.log(`[FFmpeg-Exit] Code: ${code}`);
-        ffmpeg = null;
-        if (code !== 0 && !isRestarting) {
-            console.log('[RTMP-WS] FFmpeg died unexpectedly. Attempting auto-restart...');
-            ws.send('SYSTEM-NOTICE: RTMP connection lost, restarting...');
-            setTimeout(() => {
-                if (headerFound) startFfmpeg();
-            }, 2000);
-        }
-      });
-
-      ffmpeg.stdin.on('error', (err) => {
-        console.error('[FFmpeg-Stdin-Error]', err.message);
-        // Don't kill the whole process on broken pipe
-      });
-
-    } catch (err) {
-      console.error('[FFmpeg-Exception]', err.message);
-      ws.send('FFMPEG-ERROR: Exception: ' + err.message);
-    }
-  };
-
-  ws.on('message', (message, isBinary) => {
-    if (!isBinary) return; // Ignore non-binary setup messages for simplicity now
-
-    const data = message;
-    if (!data || data.length === 0) return;
-
-    // 1. Always keep a small rolling buffer of the last few seconds for restarts
-    buffer.push(data);
-    if (buffer.length > 5) buffer.shift(); // Keep last ~5 seconds (assuming 1s chunks)
-
-    // 2. Header Detection (Only once per WebSocket session)
-    if (!headerFound) {
-      const idx = data.indexOf(Buffer.from([0x1A, 0x45, 0xDF, 0xA3]));
-      if (idx !== -1) {
-        console.log('[RTMP-WS] EBML Header detected. Stream session active.');
-        headerFound = true;
-        buffer = [data.slice(idx)]; // Reset buffer to start from header
-        bufferSize = buffer[0].length;
-      } else {
-        return; // Ignore data until we see a fresh header
+          if (match) this.socket.emit('rtmp-progress', { frame: match[1] });
       }
-    } else {
-        bufferSize += data.length;
-    }
+    });
 
-    // 3. Start/Pipe
-    if (headerFound) {
-        if (!ffmpeg && !isRestarting) {
-            if (bufferSize >= START_BUFFER_THRESHOLD) {
-                startFfmpeg();
-            }
-        } else if (ffmpeg && ffmpeg.stdin.writable) {
-            ffmpeg.stdin.write(data);
-        }
-    }
-  });
+    this.ffmpeg.on('exit', () => {
+      this.stop();
+    });
+  }
 
-  ws.on('close', () => {
-    console.log('[RTMP-WS] Client disconnected');
-    isRestarting = true; // Prevent auto-restart
-    if (ffmpeg) {
-      ffmpeg.stdin.end();
-      ffmpeg.kill('SIGTERM');
-      ffmpeg = null;
-    }
-  });
+  stop() {
+    if (this.ffmpeg) this.ffmpeg.kill('SIGTERM');
+    this.ffmpeg = null;
+    Object.values(this.plainTransports).forEach(t => t?.close());
+  }
+}
 
-  ws.on('error', (err) => {
-    console.error('[RTMP-WS] WebSocket error:', err);
-    isRestarting = true;
-    if (ffmpeg) {
-      ffmpeg.stdin.end();
-      ffmpeg.kill('SIGTERM');
-      ffmpeg = null;
-    }
-  });
-
-  ws.send('CONNECTED: Ready to receive media chunks');
-});
+async function startRtmpStreaming(producer, rtmpUrl, socket, transportId) {
+  let session = sessions.get(transportId);
+  if (!session) {
+    session = new StreamingSession(socket, rtmpUrl);
+    sessions.set(transportId, session);
+  }
+  await session.addProducer(producer);
+}
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on port ${PORT} (PROD-READY)`);
+  console.log(`WebRTC Gateway listening on port ${PORT}`);
 });
