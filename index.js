@@ -35,6 +35,8 @@ io.on('connection', (socket) => {
     // Production FFmpeg config for Facebook Live
     const ffmpegArgs = [
       '-loglevel', 'info',
+      '-analyzeduration', '10M',
+      '-probesize', '10M',
       '-i', '-', // Read from stdin
       '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
@@ -52,14 +54,17 @@ io.on('connection', (socket) => {
       if (msg.includes('frame=')) {
         const match = msg.match(/frame=\s*(\d+)/);
         if (match) socket.emit('rtmp-progress', { frame: match[1] });
+      } else {
+        // Log actual FFmpeg errors so we can debug why it died!
+        console.log(`[FFmpeg] ${msg.trim()}`);
       }
     });
 
-    ffmpeg.on('exit', (code) => {
-      console.log(`[FFmpeg-Exit] Code: ${code}`);
+    ffmpeg.on('exit', (code, signal) => {
+      console.log(`[FFmpeg-Exit] Code: ${code}, Signal: ${signal}`);
       isStreaming = false;
       ffmpeg = null;
-      socket.emit('rtmp-error', 'FFmpeg process terminated');
+      socket.emit('rtmp-error', `FFmpeg process terminated (Code: ${code})`);
     });
 
     ffmpeg.stdin.on('error', (e) => {
