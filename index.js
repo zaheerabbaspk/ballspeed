@@ -111,6 +111,11 @@ wss.on('connection', (ws, request) => {
 
     const data = message;
     if (!data || data.length === 0) return;
+    
+    totalBytes += data.length;
+    if (chunkCount++ % 10 === 0) { // Log every 10th chunk to avoid spamming
+        console.log(`[RTMP-WS] Received chunk #${chunkCount}, size: ${data.length}, total: ${totalBytes}`);
+    }
 
     // Strict WebM/EBML header detection (0x1A 0x45 0xDF 0xA3)
     if (!headerFound) {
@@ -185,8 +190,9 @@ wss.on('connection', (ws, request) => {
             const match = msg.match(/frame=\s*(\d+)/);
             if (match) ws.send(`PROGRESS: frame=${match[1]}`);
           }
-          if (msg.includes('Error') || msg.includes('fatal') || msg.includes('Invalid')) {
+          if (msg.includes('Error') || msg.includes('fatal') || msg.includes('Invalid') || msg.includes('Abnormally')) {
             console.log('[FFmpeg-Log]', msg.trim());
+            ws.send('FFMPEG-ERROR: ' + msg.trim());
           }
         });
 
